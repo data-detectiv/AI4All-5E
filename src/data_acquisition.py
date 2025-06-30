@@ -24,13 +24,21 @@ class DataAcquisition:
         Initialize Earth Engine connection
         
         Args:
-            ee_credentials_path: Path to Earth Engine credentials file
+            ee_credentials_path: Path to Earth Engine service account JSON file
         """
         try:
             if ee_credentials_path and os.path.exists(ee_credentials_path):
-                ee.Authenticate()
-            ee.Initialize()
-            logger.info("Earth Engine initialized successfully")
+                # Use service account authentication
+                credentials = ee.ServiceAccountCredentials(
+                    'ai4all5e@ee-oppongfoster89.iam.gserviceaccount.com',
+                    ee_credentials_path
+                )
+                ee.Initialize(credentials)
+                logger.info(f"Earth Engine initialized with service account: {ee_credentials_path}")
+            else:
+                # Try default authentication
+                ee.Initialize()
+                logger.info("Earth Engine initialized with default authentication")
         except Exception as e:
             logger.error(f"Failed to initialize Earth Engine: {e}")
             raise
@@ -116,7 +124,7 @@ class DataAcquisition:
     
     def export_tile(self, image: ee.Image, tile: ee.Geometry, 
                    output_path: str, scale: int = 90, 
-                   max_pixels: int = 1e8) -> ee.batch.Task:
+                   max_pixels: int = 1e6) -> ee.batch.Task:
         """
         Export a tile to Google Drive or Cloud Storage
         
@@ -176,37 +184,79 @@ class DataAcquisition:
         
         return tasks
     
-    def monitor_tasks(self, tasks: List[ee.batch.Task]) -> None:
+    def monitor_tasks(self, tasks: List[ee.batch.Task], timeout_hours: int = 2) -> None:
         """
         Monitor export tasks and log their status
         
         Args:
             tasks: List of Earth Engine tasks to monitor
+            timeout_hours: Maximum time to wait for tasks in hours
         """
         import time
+        from datetime import datetime, timedelta
+        
+        start_time = datetime.now()
+        timeout = timedelta(hours=timeout_hours)
+        
+        logger.info(f"Starting to monitor {len(tasks)} export tasks with {timeout_hours} hour timeout")
         
         while True:
-            all_completed = True
-            for i, task in enumerate(tasks):
-                status = task.status()
-                state = status['state']
+            current_time = datetime.now()
+            if current_time - start_time > timeout:
+                logger.warning(f"Timeout reached after {timeout_hours} hours. Stopping task monitoring.")
+                break
                 
-                if state == 'COMPLETED':
-                    logger.info(f"Task {i} completed successfully")
-                elif state == 'FAILED':
-                    logger.error(f"Task {i} failed: {status.get('error_message', 'Unknown error')}")
-                elif state == 'RUNNING':
-                    logger.info(f"Task {i} is running...")
-                    all_completed = False
-                else:
-                    logger.info(f"Task {i} status: {state}")
+            all_completed = True
+            failed_tasks = []
+            
+            for i, task in enumerate(tasks):
+                try:
+                    status = task.status()
+                    state = status['state']
+                    
+                    if state == 'COMPLETED':
+                        logger.info(f"Task {i} completed successfully")
+                    elif state == 'FAILED':
+                        error_msg = status.get('error_message', 'Unknown error')
+                        logger.error(f"Task {i} failed: {error_msg}")
+                        failed_tasks.append(i)
+                    elif state == 'RUNNING':
+                        logger.info(f"Task {i} is running...")
+                        all_completed = False
+                    elif state == 'READY':
+                        logger.info(f"Task {i} is ready to run...")
+                        all_completed = False
+                    elif state == 'CANCEL_REQUESTED':
+                        logger.warning(f"Task {i} cancellation requested")
+                        all_completed = False
+                    elif state == 'CANCELLED':
+                        logger.warning(f"Task {i} was cancelled")
+                    else:
+                        logger.info(f"Task {i} status: {state}")
+                        all_completed = False
+                        
+                except Exception as e:
+                    logger.error(f"Error checking status of task {i}: {e}")
                     all_completed = False
             
             if all_completed:
                 logger.info("All export tasks completed")
                 break
             
-            time.sleep(30)  # Check every 30 seconds
+            if failed_tasks:
+                logger.warning(f"Failed tasks: {failed_tasks}")
+                # Continue monitoring other tasks
+            
+            time.sleep(60)  # Check every minute instead of 30 seconds
+        
+        # Final status report
+        logger.info("Final task status report:")
+        for i, task in enumerate(tasks):
+            try:
+                status = task.status()
+                logger.info(f"Task {i}: {status['state']}")
+            except Exception as e:
+                logger.error(f"Could not get final status for task {i}: {e}")
 
 
 def load_tile_data(tile_path: str) -> Tuple[np.ndarray, Dict]:
@@ -238,7 +288,7 @@ def load_tile_data(tile_path: str) -> Tuple[np.ndarray, Dict]:
 
 if __name__ == "__main__":
     # Example usage
-    da = DataAcquisition()
+    da = DataAcquisition("src/ee-oppongfoster89-3ab1d8063f07.json")
     
     # Get Amazon region
     amazon_region = da.get_amazon_region()

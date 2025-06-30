@@ -9,8 +9,7 @@ scikit-learn>=1.3.0
 opencv-python>=4.8.0
 pillow>=10.0.0
 
-# Deep learning frameworks
-tensorflow>=2.13.0
+# Deep learning frameworks (PyTorch only)
 torch>=2.0.0
 torchvision>=0.15.0
 
@@ -30,6 +29,6 @@ flask>=2.3.0
 fastapi>=0.100.0
 uvicorn>=0.23.0
 
-# Additional utilities
-richdem>=0.3.0
-gdal>=3.6.0 
+# Additional utilities - removed problematic GDAL and richdem
+# richdem>=0.3.0
+# gdal>=3.6.0 

@@ -1,6 +1,6 @@
 """
 Models Module for Archaeological Site Detection
-Implements supervised CNN and unsupervised autoencoder models
+Implements supervised CNN and unsupervised autoencoder models (PyTorch only)
 """
 
 import numpy as np
@@ -8,9 +8,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import precision_recall_fscore_support, roc_auc_score
 from typing import Dict, List, Tuple, Optional, Any
@@ -114,87 +111,6 @@ class ArchaeologicalCNN(nn.Module):
         return x
 
 
-class UNet(nn.Module):
-    """U-Net architecture for semantic segmentation of archaeological sites"""
-    
-    def __init__(self, input_channels: int = 5, num_classes: int = 2):
-        """
-        Initialize U-Net model
-        
-        Args:
-            input_channels: Number of input channels
-            num_classes: Number of output classes
-        """
-        super(UNet, self).__init__()
-        
-        # Encoder (downsampling path)
-        self.enc1 = self._make_layer(input_channels, 64)
-        self.enc2 = self._make_layer(64, 128)
-        self.enc3 = self._make_layer(128, 256)
-        self.enc4 = self._make_layer(256, 512)
-        
-        # Bottleneck
-        self.bottleneck = self._make_layer(512, 1024)
-        
-        # Decoder (upsampling path)
-        self.up4 = nn.ConvTranspose2d(1024, 512, kernel_size=2, stride=2)
-        self.dec4 = self._make_layer(1024, 512)  # 512 + 512 from skip connection
-        
-        self.up3 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
-        self.dec3 = self._make_layer(512, 256)  # 256 + 256 from skip connection
-        
-        self.up2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
-        self.dec2 = self._make_layer(256, 128)  # 128 + 128 from skip connection
-        
-        self.up1 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
-        self.dec1 = self._make_layer(128, 64)  # 64 + 64 from skip connection
-        
-        # Final output layer
-        self.final = nn.Conv2d(64, num_classes, kernel_size=1)
-    
-    def _make_layer(self, in_channels, out_channels):
-        """Create a double convolution layer"""
-        return nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True)
-        )
-    
-    def forward(self, x):
-        # Encoder
-        enc1 = self.enc1(x)
-        enc2 = self.enc2(F.max_pool2d(enc1, 2))
-        enc3 = self.enc3(F.max_pool2d(enc2, 2))
-        enc4 = self.enc4(F.max_pool2d(enc3, 2))
-        
-        # Bottleneck
-        bottleneck = self.bottleneck(F.max_pool2d(enc4, 2))
-        
-        # Decoder with skip connections
-        dec4 = self.up4(bottleneck)
-        dec4 = torch.cat([dec4, enc4], dim=1)
-        dec4 = self.dec4(dec4)
-        
-        dec3 = self.up3(dec4)
-        dec3 = torch.cat([dec3, enc3], dim=1)
-        dec3 = self.dec3(dec3)
-        
-        dec2 = self.up2(dec3)
-        dec2 = torch.cat([dec2, enc2], dim=1)
-        dec2 = self.dec2(dec2)
-        
-        dec1 = self.up1(dec2)
-        dec1 = torch.cat([dec1, enc1], dim=1)
-        dec1 = self.dec1(dec1)
-        
-        # Final output
-        output = self.final(dec1)
-        return output
-
-
 class ArchaeologicalAutoencoder(nn.Module):
     """Autoencoder for unsupervised anomaly detection"""
     
@@ -258,7 +174,12 @@ class ArchaeologicalAutoencoder(nn.Module):
         latent = self.latent(encoded)
         
         # Decode
-        decoded = self.decoder(latent)
+        decoded = self.decoder[0](latent)  # Linear layer
+        decoded = self.decoder[1](decoded) # ReLU
+        decoded = decoded.view(-1, 256, 6, 6)  # Reshape to match encoder output
+        decoded = self.decoder[2:](decoded)  # Pass through ConvTranspose2d layers
+        # Upsample to (100, 100) to match input
+        decoded = F.interpolate(decoded, size=(100, 100), mode='bilinear', align_corners=False)
         return decoded, latent
     
     def encode(self, x):
@@ -276,7 +197,7 @@ class ModelTrainer:
         Initialize model trainer
         
         Args:
-            model_type: Type of model ('cnn', 'unet', 'autoencoder')
+            model_type: Type of model ('cnn', 'autoencoder')
             device: Device to use for training
         """
         self.model_type = model_type
@@ -290,14 +211,13 @@ class ModelTrainer:
     def create_model(self, input_channels: int = 5, **kwargs):
         """Create model based on type"""
         if self.model_type == 'cnn':
-            self.model = ArchaeologicalCNN(input_channels=input_channels, **kwargs)
-        elif self.model_type == 'unet':
-            self.model = UNet(input_channels=input_channels, **kwargs)
+            num_classes = kwargs.get('num_classes', 2)
+            self.model = ArchaeologicalCNN(input_channels=input_channels, num_classes=num_classes)
         elif self.model_type == 'autoencoder':
-            self.model = ArchaeologicalAutoencoder(input_channels=input_channels, **kwargs)
+            latent_dim = kwargs.get('latent_dim', 128)
+            self.model = ArchaeologicalAutoencoder(input_channels=input_channels, latent_dim=latent_dim)
         else:
             raise ValueError(f"Unknown model type: {self.model_type}")
-        
         self.model.to(self.device)
         logger.info(f"Created {self.model_type} model")
     
@@ -317,31 +237,29 @@ class ModelTrainer:
         self.model.train()
         total_loss = 0
         
-        for batch_idx, data in enumerate(train_loader):
+        for data in train_loader:
             if self.model_type == 'autoencoder':
-                features = data.to(self.device)
+                if isinstance(data, (list, tuple)):
+                    features = data[0]
+                else:
+                    features = data
+                features = features.to(self.device)
                 self.optimizer.zero_grad()
-                
                 reconstructed, _ = self.model(features)
                 loss = self.criterion(reconstructed, features)
-                
                 loss.backward()
                 self.optimizer.step()
-                
                 total_loss += loss.item()
             else:
                 features, labels = data
                 features = features.to(self.device)
                 labels = labels.to(self.device)
-                
+                labels = labels.long()  # Ensure labels are Long type for CrossEntropyLoss
                 self.optimizer.zero_grad()
-                
                 outputs = self.model(features)
                 loss = self.criterion(outputs, labels)
-                
                 loss.backward()
                 self.optimizer.step()
-                
                 total_loss += loss.item()
         
         return total_loss / len(train_loader)
@@ -356,7 +274,11 @@ class ModelTrainer:
         with torch.no_grad():
             for data in val_loader:
                 if self.model_type == 'autoencoder':
-                    features = data.to(self.device)
+                    if isinstance(data, (list, tuple)):
+                        features = data[0]
+                    else:
+                        features = data
+                    features = features.to(self.device)
                     reconstructed, _ = self.model(features)
                     loss = self.criterion(reconstructed, features)
                     total_loss += loss.item()
@@ -364,30 +286,42 @@ class ModelTrainer:
                     features, labels = data
                     features = features.to(self.device)
                     labels = labels.to(self.device)
-                    
+                    labels = labels.long()  # Ensure labels are Long type for CrossEntropyLoss
                     outputs = self.model(features)
                     loss = self.criterion(outputs, labels)
                     total_loss += loss.item()
-                    
-                    predictions.extend(outputs.argmax(dim=1).cpu().numpy())
+                    _, predicted = torch.max(outputs.data, 1)
+                    predictions.extend(predicted.cpu().numpy())
                     targets.extend(labels.cpu().numpy())
         
         avg_loss = total_loss / len(val_loader)
         
-        # Calculate metrics for classification models
-        metrics = {'loss': avg_loss}
-        if self.model_type != 'autoencoder' and len(predictions) > 0:
-            precision, recall, f1, _ = precision_recall_fscore_support(
-                targets, predictions, average='weighted'
-            )
-            metrics.update({
-                'precision': precision,
-                'recall': recall,
-                'f1_score': f1
-            })
+        if self.model_type == 'cnn':
+            metrics = self._calculate_metrics(targets, predictions)
+        else:
+            metrics = {'val_loss': avg_loss}
         
         return avg_loss, metrics
     
+    def _calculate_metrics(self, targets: List, predictions: List) -> Dict:
+        """Calculate classification metrics"""
+        from sklearn.metrics import precision_recall_fscore_support, accuracy_score
+        
+        if len(targets) == 0 or len(predictions) == 0:
+            return {'accuracy': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1_score': 0.0}
+        
+        accuracy = accuracy_score(targets, predictions)
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            targets, predictions, average='weighted', zero_division=0
+        )
+        
+        return {
+            'accuracy': accuracy,
+            'precision': precision,
+            'recall': recall,
+            'f1_score': f1
+        }
+
     def train(self, train_loader: DataLoader, val_loader: DataLoader, 
               epochs: int = 50, patience: int = 10) -> Dict:
         """Train model with early stopping"""
@@ -434,16 +368,25 @@ class ModelTrainer:
         with torch.no_grad():
             for data in test_loader:
                 if self.model_type == 'autoencoder':
-                    features = data.to(self.device)
+                    if isinstance(data, (list, tuple)):
+                        features = data[0]
+                    else:
+                        features = data
+                    features = features.to(self.device)
                     reconstructed, _ = self.model(features)
                     # For autoencoder, return reconstruction error as anomaly score
                     error = torch.mean((features - reconstructed) ** 2, dim=[1, 2, 3])
                     predictions.extend(error.cpu().numpy())
                 else:
-                    features = data.to(self.device)
+                    # For CNN, data should be (features, labels) tuple
+                    if isinstance(data, (list, tuple)) and len(data) == 2:
+                        features, _ = data
+                    else:
+                        features = data
+                    features = features.to(self.device)
                     outputs = self.model(features)
-                    predictions.extend(outputs.softmax(dim=1)[:, 1].cpu().numpy())
-        
+                    _, predicted = torch.max(outputs.data, 1)
+                    predictions.extend(predicted.cpu().numpy())
         return np.array(predictions)
     
     def save_model(self, path: str):
@@ -462,64 +405,6 @@ class ModelTrainer:
         if self.optimizer:
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         logger.info(f"Model loaded from: {path}")
-
-
-class TensorFlowModels:
-    """TensorFlow/Keras implementations for comparison"""
-    
-    @staticmethod
-    def create_cnn_model(input_shape: Tuple[int, int, int], num_classes: int = 2):
-        """Create CNN model using TensorFlow/Keras"""
-        model = keras.Sequential([
-            layers.Conv2D(32, 3, activation='relu', input_shape=input_shape),
-            layers.MaxPooling2D(),
-            layers.Conv2D(64, 3, activation='relu'),
-            layers.MaxPooling2D(),
-            layers.Conv2D(128, 3, activation='relu'),
-            layers.MaxPooling2D(),
-            layers.Flatten(),
-            layers.Dropout(0.5),
-            layers.Dense(128, activation='relu'),
-            layers.Dropout(0.5),
-            layers.Dense(num_classes, activation='softmax')
-        ])
-        
-        model.compile(
-            optimizer='adam',
-            loss='sparse_categorical_crossentropy',
-            metrics=['accuracy']
-        )
-        
-        return model
-    
-    @staticmethod
-    def create_autoencoder_model(input_shape: Tuple[int, int, int], latent_dim: int = 128):
-        """Create autoencoder model using TensorFlow/Keras"""
-        # Encoder
-        encoder_input = keras.Input(shape=input_shape)
-        x = layers.Conv2D(32, 3, activation='relu', padding='same')(encoder_input)
-        x = layers.MaxPooling2D(2, 2)(x)
-        x = layers.Conv2D(64, 3, activation='relu', padding='same')(x)
-        x = layers.MaxPooling2D(2, 2)(x)
-        x = layers.Conv2D(128, 3, activation='relu', padding='same')(x)
-        x = layers.MaxPooling2D(2, 2)(x)
-        x = layers.Flatten()(x)
-        latent = layers.Dense(latent_dim, activation='relu')(x)
-        
-        # Decoder
-        x = layers.Dense(128 * 12 * 12, activation='relu')(latent)
-        x = layers.Reshape((12, 12, 128))(x)
-        x = layers.Conv2DTranspose(64, 3, activation='relu', padding='same')(x)
-        x = layers.UpSampling2D(2)(x)
-        x = layers.Conv2DTranspose(32, 3, activation='relu', padding='same')(x)
-        x = layers.UpSampling2D(2)(x)
-        x = layers.Conv2DTranspose(input_shape[2], 3, activation='sigmoid', padding='same')(x)
-        x = layers.UpSampling2D(2)(x)
-        
-        autoencoder = keras.Model(encoder_input, x)
-        autoencoder.compile(optimizer='adam', loss='mse')
-        
-        return autoencoder
 
 
 def evaluate_model_performance(y_true: np.ndarray, y_pred: np.ndarray, 

@@ -299,63 +299,83 @@ class ArchaeologicalFeatureDetector:
         
         return terrace_systems
     
-    def analyze_tile(self, elevation: np.ndarray, 
-                    slope: np.ndarray, 
-                    hillshade: np.ndarray,
-                    tile_info: Dict[str, Any]) -> Dict[str, Any]:
+    def detect_features(self, elevation: np.ndarray, slope: np.ndarray, 
+                       hillshade: np.ndarray, curvature: np.ndarray) -> Dict[str, List]:
         """
-        Comprehensive analysis of a tile for archaeological features
+        Detect all types of archaeological features in a tile
         
         Args:
             elevation: Elevation data
             slope: Slope data
             hillshade: Hillshade data
-            tile_info: Information about the tile
+            curvature: Curvature data
             
         Returns:
-            Analysis results dictionary
+            Dictionary containing all detected features
         """
-        logger.info(f"Analyzing tile: {tile_info.get('tile_id', 'unknown')}")
+        features = {
+            "linear_features": self.detect_linear_features(elevation, slope),
+            "circular_features": self.detect_circular_features(elevation, hillshade),
+            "rectangular_features": self.detect_rectangular_features(elevation, slope),
+            "elevation_anomalies": self.detect_anomalous_elevation(elevation),
+            "terrace_systems": self.detect_terrace_systems(elevation, slope)
+        }
         
-        # Detect different types of features
-        linear_features = self.detect_linear_features(elevation, slope)
-        circular_features = self.detect_circular_features(elevation, hillshade)
-        rectangular_features = self.detect_rectangular_features(elevation, slope)
-        elevation_anomalies = self.detect_anomalous_elevation(elevation)
-        terrace_systems = self.detect_terrace_systems(elevation, slope)
+        return features
+    
+    def analyze_tile(self, tile_path: str) -> Dict[str, Any]:
+        """
+        Analyze a single tile for archaeological features
         
-        # Combine all features
-        all_features = (linear_features + circular_features + 
-                       rectangular_features + elevation_anomalies + terrace_systems)
+        Args:
+            tile_path: Path to processed tile file
+            
+        Returns:
+            Dictionary containing analysis results
+        """
+        # Load processed tile data
+        tile_name = os.path.splitext(os.path.basename(tile_path))[0]
         
-        # Calculate overall archaeological potential
-        total_features = len(all_features)
-        avg_confidence = np.mean([f.get('confidence', 0) for f in all_features]) if all_features else 0
+        # Load the processed data
+        processed_dir = "data/processed"
+        tile_data_path = os.path.join(processed_dir, tile_name)
         
-        # Determine overall assessment
-        if total_features == 0:
-            overall_assessment = 'natural'
-        elif total_features >= 5 and avg_confidence > 0.5:
-            overall_assessment = 'high_archaeological_potential'
-        elif total_features >= 2 and avg_confidence > 0.3:
-            overall_assessment = 'moderate_archaeological_potential'
-        else:
-            overall_assessment = 'low_archaeological_potential'
+        if not os.path.exists(tile_data_path):
+            raise FileNotFoundError(f"Processed data not found for {tile_name}")
         
-        return {
-            'tile_id': tile_info.get('tile_id', 'unknown'),
-            'features': all_features,
-            'total_features': total_features,
-            'average_confidence': avg_confidence,
-            'overall_assessment': overall_assessment,
-            'feature_types': {
-                'linear': len(linear_features),
-                'circular': len(circular_features),
-                'rectangular': len(rectangular_features),
-                'elevation_anomalies': len(elevation_anomalies),
-                'terrace_systems': len(terrace_systems)
+        # Load individual arrays
+        elevation = np.load(os.path.join(tile_data_path, "elevation.npy"))
+        slope = np.load(os.path.join(tile_data_path, "slope.npy"))
+        aspect = np.load(os.path.join(tile_data_path, "aspect.npy"))
+        hillshade = np.load(os.path.join(tile_data_path, "hillshade.npy"))
+        curvature = np.load(os.path.join(tile_data_path, "curvature.npy"))
+        
+        # Perform feature detection
+        features = self.detect_features(elevation, slope, hillshade, curvature)
+        
+        # Create analysis result
+        analysis = {
+            "tile_name": tile_name,
+            "tile_path": tile_path,
+            "features": features,
+            "statistics": {
+                "elevation_mean": float(np.mean(elevation)),
+                "elevation_std": float(np.std(elevation)),
+                "slope_mean": float(np.mean(slope)),
+                "slope_std": float(np.std(slope)),
+                "curvature_mean": float(np.mean(curvature)),
+                "curvature_std": float(np.std(curvature))
+            },
+            "feature_counts": {
+                "linear_features": len(features.get("linear_features", [])),
+                "circular_features": len(features.get("circular_features", [])),
+                "rectangular_features": len(features.get("rectangular_features", [])),
+                "elevation_anomalies": len(features.get("elevation_anomalies", [])),
+                "terrace_systems": len(features.get("terrace_systems", []))
             }
         }
+        
+        return analysis
     
     def create_visualization(self, elevation: np.ndarray, 
                            slope: np.ndarray, 
@@ -440,55 +460,58 @@ class ArchaeologicalFeatureDetector:
                                        color=color, fill=False, linewidth=2)
                     ax.add_patch(rect)
     
-    def batch_analyze_tiles(self, tiles_data: List[Dict[str, Any]], 
-                          output_dir: str = "analysis") -> List[Dict[str, Any]]:
+    def _convert_numpy_types(self, obj):
+        """Convert NumPy types to native Python types for JSON serialization"""
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {key: self._convert_numpy_types(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [self._convert_numpy_types(item) for item in obj]
+        else:
+            return obj
+
+    def batch_analyze_tiles(self, tile_paths: List[str], output_dir: str = "analysis") -> List[Dict]:
         """
-        Analyze multiple tiles in batch
+        Analyze multiple tiles for archaeological features
         
         Args:
-            tiles_data: List of tile data dictionaries
+            tile_paths: List of paths to processed tile files
             output_dir: Output directory for analysis results
             
         Returns:
-            List of analysis results
+            List of analysis results for each tile
         """
         os.makedirs(output_dir, exist_ok=True)
-        
         analyses = []
-        for tile_data in tiles_data:
-            logger.info(f"Analyzing tile: {tile_data.get('tile_id', 'unknown')}")
-            
-            analysis = self.analyze_tile(
-                elevation=tile_data['elevation'],
-                slope=tile_data['slope'],
-                hillshade=tile_data['hillshade'],
-                tile_info=tile_data
-            )
-            
-            # Create visualization
-            viz_path = os.path.join(output_dir, f"viz_{tile_data.get('tile_id', 'unknown')}.png")
-            self.create_visualization(
-                elevation=tile_data['elevation'],
-                slope=tile_data['slope'],
-                hillshade=tile_data['hillshade'],
-                features=analysis['features'],
-                save_path=viz_path
-            )
-            
-            analysis['visualization_path'] = viz_path
-            analyses.append(analysis)
-            
-            # Save individual analysis
-            analysis_path = os.path.join(output_dir, f"analysis_{tile_data.get('tile_id', 'unknown')}.json")
-            with open(analysis_path, 'w') as f:
-                json.dump(analysis, f, indent=2)
         
-        # Save summary
-        summary_path = os.path.join(output_dir, "analysis_summary.json")
-        with open(summary_path, 'w') as f:
-            json.dump(analyses, f, indent=2)
+        for tile_path in tile_paths:
+            try:
+                tile_name = os.path.splitext(os.path.basename(tile_path))[0]
+                logger.info(f"Analyzing tile: {tile_name}")
+                
+                # Analyze tile
+                analysis = self.analyze_tile(tile_path)
+                
+                # Convert NumPy types for JSON serialization
+                analysis = self._convert_numpy_types(analysis)
+                
+                # Save analysis to file
+                analysis_path = os.path.join(output_dir, f"{tile_name}_analysis.json")
+                with open(analysis_path, 'w') as f:
+                    json.dump(analysis, f, indent=2)
+                
+                analyses.append(analysis)
+                logger.info(f"Analysis saved: {analysis_path}")
+                
+            except Exception as e:
+                logger.error(f"Failed to analyze {tile_path}: {e}")
+                analyses.append({"error": str(e)})
         
-        logger.info(f"Completed batch analysis of {len(analyses)} tiles")
         return analyses
     
     def create_analysis_report(self, analyses: List[Dict[str, Any]], 
@@ -563,7 +586,7 @@ class ArchaeologicalFeatureDetector:
             total_features = analysis.get('total_features', 0)
             avg_confidence = analysis.get('average_confidence', 0)
             assessment = analysis.get('overall_assessment', 'unknown')
-            features = analysis.get('features', [])
+            features = analysis.get('features', {})
             feature_types = analysis.get('feature_types', {})
             
             confidence_class = 'confidence-high' if avg_confidence > 0.6 else 'confidence-medium' if avg_confidence > 0.3 else 'confidence-low'
@@ -589,14 +612,15 @@ class ArchaeologicalFeatureDetector:
                 <h4>Detected Features:</h4>
             """
             
-            for feature in features:
-                html_content += f"""
-                <div class="feature">
-                    <strong>Type:</strong> {feature.get('type', 'unknown')}<br>
-                    <strong>Confidence:</strong> {feature.get('confidence', 0):.2f}<br>
-                    <strong>Details:</strong> {str(feature)}
-                </div>
-                """
+            for feature in features.values():
+                for f in feature:
+                    html_content += f"""
+                    <div class="feature">
+                        <strong>Type:</strong> {f.get('type', 'unknown')}<br>
+                        <strong>Confidence:</strong> {f.get('confidence', 0):.2f}<br>
+                        <strong>Details:</strong> {str(f)}
+                    </div>
+                    """
             
             html_content += "</div>"
         
@@ -629,10 +653,7 @@ if __name__ == "__main__":
     
     # Analyze the tile
     analysis = detector.analyze_tile(
-        elevation=example_elevation,
-        slope=example_slope,
-        hillshade=example_hillshade,
-        tile_info=tile_info
+        tile_path=example_elevation
     )
     
     print("Analysis completed:")
