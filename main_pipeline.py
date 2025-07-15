@@ -69,132 +69,69 @@ class ArchaeologicalSiteDetectionPipeline:
             os.makedirs(directory, exist_ok=True)
     
     def step1_data_acquisition(self):
-        """Step 1: Data Acquisition from Google Earth Engine"""
+        """Step 1: Data Acquisition from Google Earth Engine (API only, in-memory)"""
         logger.info("=== Step 1: Data Acquisition ===")
-        
-        # Use existing real SRTM data from asset folder
-        asset_dir = "asset"
-        data_tiles_dir = "data/tiles"
-        
-        # Create tiles directory if it doesn't exist
-        os.makedirs(data_tiles_dir, exist_ok=True)
-        
-        # Copy existing tiles from asset to data/tiles
-        tile_paths = []
-        
-        for i in range(9):  # We have tiles 0-8
-            src_path = os.path.join(asset_dir, f"tile_{i}.tif")
-            dst_path = os.path.join(data_tiles_dir, f"tile_{i}.tif")
-            
-            if os.path.exists(src_path):
-                shutil.copy2(src_path, dst_path)
-                tile_paths.append(dst_path)
-                logger.info(f"Copied tile_{i}.tif from asset folder")
-            else:
-                logger.warning(f"Tile {i} not found in asset folder")
-        
-        if not tile_paths:
-            logger.error("No tiles found in asset folder. Creating sample data.")
-            self._create_sample_data()
-            tile_paths = [os.path.join(data_tiles_dir, f) for f in os.listdir(data_tiles_dir) if f.endswith('.tif')]
-        
-        logger.info(f"Data acquisition completed. Using {len(tile_paths)} existing tiles from asset folder.")
-        return tile_paths
-    
-    def _create_sample_data(self):
-        """Create sample elevation data for testing when Earth Engine is unavailable"""
-        logger.info("Creating sample elevation data...")
-        
-        import numpy as np
-        import rasterio
-        from rasterio.transform import from_bounds
-        
-        # Create sample tiles directory
-        os.makedirs("data/tiles", exist_ok=True)
-        
-        # Create 9 sample tiles with realistic elevation patterns
-        for i in range(9):
-            # Create realistic elevation data (100x100 pixels)
-            elevation = np.random.normal(100, 50, (100, 100))
-            
-            # Add some terrain features
-            x, y = np.meshgrid(np.arange(100), np.arange(100))
-            
-            # Add hills
-            elevation += 20 * np.sin(x/10) * np.cos(y/10)
-            
-            # Add some linear features (potential archaeological sites)
-            if i % 3 == 0:  # Every 3rd tile has a linear feature
-                elevation += 10 * np.sin(x/5)  # Linear ridge
-            
-            # Ensure positive elevation
-            elevation = np.maximum(elevation, 0)
-            
-            # Create GeoTIFF
-            output_path = f"data/tiles/tile_{i}.tif"
-            
-            # Define geotransform (sample coordinates in Amazon region)
-            bounds = (-70, -10, -60, 0)  # Rough Amazon coordinates
-            transform = from_bounds(*bounds, 100, 100)
-            
-            with rasterio.open(
-                output_path,
-                'w',
-                driver='GTiff',
-                height=100,
-                width=100,
-                count=1,
-                dtype=elevation.dtype,
-                crs='EPSG:4326',
-                transform=transform,
-                nodata=-9999
-            ) as dst:
-                dst.write(elevation, 1)
-            
-            logger.info(f"Created sample tile: {output_path}")
-        
-        logger.info("Sample data creation completed.")
-    
-    def step2_preprocessing(self, tile_paths: List[str]) -> List[Dict[str, Any]]:
+        # Initialize DataAcquisition
+        if not self.data_acquisition:
+            self.data_acquisition = DataAcquisition(self.config.get('ee_credentials_path'))
+        # Get Amazon region
+        amazon_region = self.data_acquisition.get_amazon_region()
+        # Get SRTM data (full region)
+        srtm_image = self.data_acquisition.get_srtm_data(amazon_region)
+        # Create tiling grid
+        num_tiles_x = self.config.get('num_tiles_x', 3)
+        num_tiles_y = self.config.get('num_tiles_y', 3)
+        tiles = self.data_acquisition.create_tiling_grid(amazon_region, num_tiles_x, num_tiles_y)
+        # Download each tile as a numpy array (in-memory)
+        tile_arrays = []
+        for i, tile_geom in enumerate(tiles):
+            # Get bounds
+            coords = tile_geom.bounds().getInfo()['coordinates'][0]
+            min_lon, min_lat = coords[0]
+            max_lon, max_lat = coords[2]
+            # Download tile as numpy array
+            url = srtm_image.clip(tile_geom).getDownloadURL({
+                'scale': 90,
+                'crs': 'EPSG:4326',
+                'region': tile_geom,
+                'format': 'NPY'
+            })
+            import requests
+            import io
+            response = requests.get(url)
+            elevation = np.load(io.BytesIO(response.content))
+            metadata = {
+                'bounds': (min_lon, min_lat, max_lon, max_lat),
+                'crs': 'EPSG:4326',
+                'nodata': None
+            }
+            tile_arrays.append({'elevation': elevation, 'metadata': metadata})
+            logger.info(f"Fetched tile {i} from GEE API")
+        logger.info(f"Data acquisition completed. {len(tile_arrays)} tiles fetched from GEE API.")
+        return tile_arrays
+
+    def step2_preprocessing(self, tile_arrays: list) -> list:
         """
-        Step 2: Preprocess tiles and compute terrain derivatives
-        
+        Step 2: Preprocess tiles and compute terrain derivatives (in-memory)
         Args:
-            tile_paths: List of tile file paths
-            
+            tile_arrays: List of dicts with 'elevation' and 'metadata'
         Returns:
             List of processed tile data
         """
         logger.info("=== Step 2: Preprocessing ===")
-        
-        try:
-            # Initialize terrain processor
-            self.terrain_processor = TerrainProcessor(
-                target_size=self.config.get('target_size', (100, 100))
+        self.terrain_processor = TerrainProcessor(
+            target_size=self.config.get('target_size', (100, 100))
+        )
+        processed_tiles = []
+        for i, tile in enumerate(tile_arrays):
+            logger.info(f"Processing tile {i}")
+            result = self.terrain_processor.process_tile_array(
+                elevation=tile['elevation'],
+                metadata=tile['metadata']
             )
-            
-            processed_tiles = []
-            
-            for tile_path in tile_paths:
-                logger.info(f"Processing tile: {os.path.basename(tile_path)}")
-                
-                # Process tile
-                result = self.terrain_processor.process_tile(
-                    tile_path=tile_path,
-                    output_path=tile_path.replace('.tif', '_processed.tif'),
-                    save_intermediate=True
-                )
-                
-                # Add tile path to result
-                result['original_path'] = tile_path
-                processed_tiles.append(result)
-            
-            logger.info(f"Preprocessing completed. {len(processed_tiles)} tiles processed.")
-            return processed_tiles
-            
-        except Exception as e:
-            logger.error(f"Preprocessing failed: {e}")
-            raise
+            processed_tiles.append(result)
+        logger.info(f"Preprocessing completed. {len(processed_tiles)} tiles processed.")
+        return processed_tiles
     
     def step3_feature_detection(self, processed_tiles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -468,10 +405,10 @@ class ArchaeologicalSiteDetectionPipeline:
         
         try:
             # Step 1: Data Acquisition
-            tile_paths = self.step1_data_acquisition()
+            tile_arrays = self.step1_data_acquisition()
             
             # Step 2: Preprocessing
-            processed_tiles = self.step2_preprocessing(tile_paths)
+            processed_tiles = self.step2_preprocessing(tile_arrays)
             
             # Step 3: Feature Detection
             analyses = self.step3_feature_detection(processed_tiles)
@@ -485,7 +422,7 @@ class ArchaeologicalSiteDetectionPipeline:
             logger.info("Pipeline completed successfully!")
             
             return {
-                'tile_paths': tile_paths,
+                'tile_arrays': tile_arrays,
                 'processed_tiles': len(processed_tiles),
                 'analyses': analyses,
                 'training_results': training_results,

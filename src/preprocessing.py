@@ -202,56 +202,29 @@ class TerrainProcessor:
         
         return feature_stack
     
-    def process_tile(self, tile_path: str, 
-                    output_path: Optional[str] = None,
-                    save_intermediate: bool = False) -> Dict:
+    def process_tile_array(self, elevation: np.ndarray, metadata: Optional[Dict] = None) -> Dict:
         """
-        Process a single tile through the complete pipeline
-        
+        Process a single tile from an in-memory elevation array.
         Args:
-            tile_path: Path to input tile
-            output_path: Path to save processed tile
-            save_intermediate: Whether to save intermediate results
-            
+            elevation: Elevation array (2D numpy array)
+            metadata: Optional metadata dictionary
         Returns:
             Dictionary containing processed data and metadata
         """
-        # Load tile data
-        with rasterio.open(tile_path) as src:
-            elevation = src.read(1)
-            metadata = {
-                'transform': src.transform,
-                'crs': src.crs,
-                'nodata': src.nodata
-            }
-        
-        # Handle nodata values
-        if src.nodata is not None:
-            elevation = np.ma.masked_equal(elevation, src.nodata)
+        # Handle nodata values if present in metadata
+        if metadata and 'nodata' in metadata and metadata['nodata'] is not None:
+            elevation = np.ma.masked_equal(elevation, metadata['nodata'])
             elevation = elevation.filled(np.nan)
-        
         # Resize to target size
         elevation_resized = self.resize_tile(elevation)
-        
         # Create feature stack
         feature_stack = self.create_feature_stack(elevation_resized)
-        
         # Prepare output
         result = {
             'elevation': elevation_resized,
             'feature_stack': feature_stack,
             'metadata': metadata,
-            'tile_path': tile_path
         }
-        
-        # Save processed tile if output path provided
-        if output_path:
-            self.save_processed_tile(feature_stack, output_path, metadata)
-        
-        # Save intermediate results if requested
-        if save_intermediate:
-            self.save_intermediate_results(tile_path, result)
-        
         return result
     
     def save_processed_tile(self, feature_stack: np.ndarray, 
