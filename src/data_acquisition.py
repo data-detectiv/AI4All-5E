@@ -293,7 +293,7 @@ def load_tile_data(tile_path: str) -> Tuple[np.ndarray, Dict]:
 
 if __name__ == "__main__":
     # Example usage
-    da = DataAcquisition("src/ee-oppongfoster89-3ab1d8063f07.json")
+    da = DataAcquisition("src/ee-oppongfoster89-eb504ec856ea.json")
     
     # Get Amazon region
     amazon_region = da.get_amazon_region()
