@@ -79,8 +79,8 @@ class ArchaeologicalSiteDetectionPipeline:
         # Get SRTM data (full region)
         srtm_image = self.data_acquisition.get_srtm_data(amazon_region)
         # Create tiling grid
-        num_tiles_x = self.config.get('num_tiles_x', 3)
-        num_tiles_y = self.config.get('num_tiles_y', 3)
+        num_tiles_x = self.config.get('num_tiles_x', 5)
+        num_tiles_y = self.config.get('num_tiles_y', 5)
         tiles = self.data_acquisition.create_tiling_grid(amazon_region, num_tiles_x, num_tiles_y)
         # Download each tile as a numpy array (in-memory)
         tile_arrays = []
