@@ -10,6 +10,8 @@ import rasterio
 from rasterio.transform import from_bounds
 from typing import List, Tuple, Dict, Optional
 import logging
+import matplotlib
+matplotlib.use('Agg')
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
