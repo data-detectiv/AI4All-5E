@@ -13,6 +13,7 @@ import logging
 import matplotlib
 matplotlib.use('Agg')
 
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ class DataAcquisition:
         Args:
             ee_credentials_path: Path to Earth Engine service account JSON file
         """
+
         try:
             if ee_credentials_path and os.path.exists(ee_credentials_path):
                 # Use service account authentication
