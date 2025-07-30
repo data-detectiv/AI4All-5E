@@ -10,6 +10,8 @@ import rasterio
 from rasterio.transform import from_bounds
 from typing import List, Tuple, Dict, Optional
 import logging
+import matplotlib
+matplotlib.use('Agg')
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -33,11 +35,11 @@ class DataAcquisition:
                     'ai4all5e@ee-oppongfoster89.iam.gserviceaccount.com',
                     ee_credentials_path
                 )
-                ee.Initialize(credentials)
+                ee.Initialize(credentials, project='ee-oppongfoster89')
                 logger.info(f"Earth Engine initialized with service account: {ee_credentials_path}")
             else:
                 # Try default authentication
-                ee.Initialize()
+                ee.Initialize(project='ee-oppongfoster89')
                 logger.info("Earth Engine initialized with default authentication")
         except Exception as e:
             logger.error(f"Failed to initialize Earth Engine: {e}")
@@ -55,8 +57,13 @@ class DataAcquisition:
         """
         # Load Amazon biome from RESOLVE ecoregions
         amazon = ee.FeatureCollection("RESOLVE/ECOREGIONS/2017").filter(
-            ee.Filter.eq('ECO_NAME', 'Amazonia')
+            ee.Filter.eq('ECO_NAME', 'Southwest Amazon moist forests')
         )
+
+        # size = amazon.size().getInfo()
+        # logger.info(f"Amazon region feature count: {size}")
+        # if size == 0:
+        #     raise ValueError("Amazon region filter returned no features. Check the filter or your Earth Engine permissions.")
         
         # Add buffer if specified
         if buffer_degrees > 0:
@@ -288,7 +295,7 @@ def load_tile_data(tile_path: str) -> Tuple[np.ndarray, Dict]:
 
 if __name__ == "__main__":
     # Example usage
-    da = DataAcquisition("src/ee-oppongfoster89-3ab1d8063f07.json")
+    da = DataAcquisition("src/ee-oppongfoster89-eb504ec856ea.json")
     
     # Get Amazon region
     amazon_region = da.get_amazon_region()
